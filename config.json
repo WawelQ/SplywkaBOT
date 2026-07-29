@@ -1,0 +1,17 @@
+{
+  "verification": {
+    "channelId": "",
+    "roleId": "",
+    "messageId": ""
+  },
+  "reactionRole": {
+    "channelId": "",
+    "messageTitle": "",
+    "embedColor": "",
+    "messageId": ""
+  },
+  "roles": [
+    { "description": "", "emoji": "", "roleId": "" },
+    { "description": "", "emoji": "", "roleId": "" }
+  ]
+}
