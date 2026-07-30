@@ -161,5 +161,60 @@ async function reactionRoleMessage() {
   saveConfig();
 }
 
+// Function that handles reactions and gives the corresponding roles
+async function handleReaction(reaction, user, isAdding) {
+  // Checks if the reaction was send fully before trying to examine it
+  if (reaction.partial) {
+    // Tries to refetch that reaction
+    await reaction.fetch();
+  }
+
+  // If that reaction wasn't added to reaction-role message then return
+  if (reaction.message.id !== config.reactionRole.messageId) return;
+
+  // If person adding the reaction is myself (bot) then also return
+  if (user.bot) return;
+
+  // Save the added reaction to a variable
+  const reactionUpdatedEmoji = reaction.emoji.name;
+
+  // Fetch the guild member using the users id provided by messageReaction
+  const member = await reaction.message.guild.members.fetch(user.id);
+
+  log(`User ${member.id} ${isAdding ? 'added' : 'removed'} ${reactionUpdatedEmoji}`);
+
+  // Coutns the amout of roles
+  const rolesCount = config.roles?.length ?? 0;
+  // For every role entry it checks if emoji is equal to just added emoji by the user if yes then adds the corresponding role to the same user
+  for (let i = 0; i < rolesCount; i++) {
+    // Declare the emoji and roleId as let variable type to let it change for every loop cycle
+    let { emoji, roleId } = config.roles[i]; 
+    if (reactionUpdatedEmoji === emoji) {
+      try {
+        // Adds the role to the user if they are adding the reaction
+        if (isAdding) {
+          await member.roles.add(roleId);
+          log(`Added role: ${roleId} to: ${member.id}`);
+        }
+        // If not then just remove the reaction
+        else {
+          await member.roles.remove(roleId);
+          log(`Removed role: ${roleId} from: ${member.id}`);
+        }
+      } catch (error) {
+        console.error(`Failed to ${isAdding ? 'add' : 'remove'} role ${roleId} for ${member.id}`, error.message);
+      }
+    }
+  }
+}
+
+client.on('messageReactionAdd', (reaction, user) => {
+  handleReaction(reaction, user, true).catch(console.error);
+});
+
+client.on('messageReactionRemove', (reaction, user) => {
+  handleReaction(reaction, user, false).catch(console.error);
+});
+
 // Logging in to Discord as a bot essentially starting it up
 client.login(process.env.TOKEN);
