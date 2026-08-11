@@ -19,6 +19,36 @@ function log(message) {
   console.log(logMessage);
 }
 
+// Helper function that gets the intiger value of how much role entries there are so i wouldn't use the same thing 5 times across the code
+function getRolesCount() {
+  // Checks how many role entries there are
+  return config.roles?.length ?? 0;
+}
+
+// Helper function that fetches channel
+async function fetchChannel(channelId) {
+  try {
+    const channel = await client.channels.fetch(channelId);
+    log(`Fetched channel: ${channelId}`);
+    return channel;
+  } catch (err) {
+    log(`Failed to fetch channel ${channelId}: ${err.message}`);
+    throw err;
+  }
+}
+
+// Helper function that fetches message
+async function fetchMessage(channel, messageId) {
+  try {
+    const message = await channel.messages.fetch(messageId);
+    log(`Fetched message: ${messageId}`);
+    return message;
+  } catch (err) {
+    log(`Failed to fetch message ${messageId}: ${err.message}`);
+    return null;
+  }
+}
+
 // Logging bot startup with exact time bot started
 console.log(`[---------- ${new Date().toLocaleString()} ----------]`);
 
@@ -45,8 +75,7 @@ function validateConfig() {
   }
 
   // Roles section it's more complicated because user can define how many roles should be supported
-  const rolesCount = config.roles?.length ?? 0; // Checks how many role entries there are
-  for (let i = 0; i < rolesCount; i++) {
+  for (let i = 0; i < getRolesCount(); i++) {
     const role = config.roles[i];
     const { description, emoji, roleId } = role;
 
@@ -61,7 +90,7 @@ function validateConfig() {
       // If at least one variable is missing it stops the program and logs which values are incorrect
       log(`${path} is missing in the config.json file`);
     }
-    throw new Error('Required variables are not declared in config.json file');
+    throw new Error(`Required variables are not declared in config.json file`);
   }
 }
 
@@ -91,45 +120,44 @@ const client = new Client({
 // Checks the config before bot startup
 validateConfig();
 
+// Temporary sleep function just for testing it will be removed later
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Function that runs once client is ready
 client.once('clientReady', async () => {
   log(`Logged in as ${client.user.tag}`);
   await reactionRoleMessage();
+  await sleep(5000);
+  await ensureRoles();
 });
 
 // Sends the reaction-role message if it hasn't been sent yet
 async function reactionRoleMessage() {
   // Loading channelId and messageId from config file
   const { channelId, messageId } = config.reactionRole;
-  log(`Reaction-role channelId: ${channelId}`);
-  log(`Reaction-role messageId: ${messageId}`);
+  log(`Loaded reaction-role channelId from config file: ${channelId}`);
+  log(`Loaded reaction-role messageId from config file: ${messageId}`);
 
-  // Looking if such a channel with channelId even exists if yes it returns it's channelId
-  // If it doesn't exist it throws an error
-  let channel // Declaring the channel before try catch block because this variable is used later for fetching messages
-  try {
-    channel = await client.channels.fetch(channelId); // Fetching channels and looking for a channel with specific channelId
-    log(`Reaction-role channel exists with channelId: ${channelId}`);
-  } catch (err) {
-    log(`Reaction-role channelId: ${channelId} is invalid or channel is not accessible`);
-    throw err;
-  }
-
-  // If messageId has any value it checks if this message exists on the channel (it could be deleted by someone)
+  // Getting the channel object from new helper function
+  const channel = await fetchChannel(channelId);
+  // If messageId has any value then check if it exists
   if (messageId !== '') {
-    try {
-      await channel.messages.fetch(messageId); // Fetching specific message by its messageId 
-      log(`Reaction-role message exists on channelId: ${channelId}`);
-      return; // Leaves the reactionRoleMessage function and continues without sending another reaction-role message
-    } catch {
-      log(`Reaction-role messageId is present but the message could not be found on channelId: ${channelId}`)
-      // Leaves the if statement and goes straight up to creating and sending reaction-role message
-    }
-  }
+    // Save message object to a variable
+    const message = await fetchMessage(channel, messageId);
 
-  const rolesCount = config.roles?.length ?? 0; // Checks how many role entries there are
+    if (message) {
+      // If message exists it exits the whole function because there's no need for creating a new message
+      log(`Reaction-role message exists on channel: ${channelId}`);
+      return;
+    }
+    // After this it leaves the statement and goes straight up to creating the message
+  }
+  log(`Reaction-role message doesn't exist or couldn't be found, creating a new one...`);
+
   let text = ''; // Define a description variable that will be later used in embedBuilder
-  for (let i = 0; i < rolesCount; i++) {
+  for (let i = 0; i < getRolesCount(); i++) {
     const { description, emoji } = config.roles[i];
     // Builds the text variable so it will look cool
     text += `**${emoji} - ${description}**\n`;
@@ -161,6 +189,63 @@ async function reactionRoleMessage() {
   saveConfig();
 }
 
+// Function that ensures roles are synced for all users while the bot was inactive
+async function ensureRoles() {
+  const { channelId, messageId } = config.reactionRole;
+
+  // Fetching the channel object
+  const channel = await fetchChannel(channelId);
+  // Fetching the message and returning if the message doesn't exist
+  const message = await fetchMessage(channel, messageId);
+  if (!message) { 
+    log(`Reaction-role messageId is present but the message could not be found`);
+    return;
+  }
+
+  await channel.guild.members.fetch();
+
+  for (let i = 0; i < getRolesCount(); i++) {
+    const { emoji, roleId } = config.roles[i];
+
+    // Safely recieve the reaction object even if there are no reactions
+    const reaction = message.reactions.cache.get(emoji);
+    const reactionEmoji = reaction.emoji.name;
+    const users = reaction ? await reaction.users.fetch() : new Map();
+
+    // Store userIds who currently have active reaction in a set for fast lookup
+    const reactedUserIds = new Set(
+      users.filter(user => !user.bot).map(user => user.id)
+    );
+
+    // Add missing roles
+    for (const userId of reactedUserIds) {
+      try {
+        const member = await channel.guild.members.fetch(userId);
+        
+
+        if (!member.roles.cache.has(roleId)) {
+          log(`${member.user.username} added ${reactionEmoji} reaction while the bot was offline`);
+          await handleReaction(reaction, member, true);
+        }
+      } catch (err) {
+        console.error(`Could not fetch member with id ${userId}:`, err.message);
+      }
+    }
+
+    // Remove extra roles
+    const role = channel.guild.roles.cache.get(roleId);
+    if (role) {
+      // Loop for every user with this role
+      for (const [memberId, member] of role.members) {
+        if (!member.user.bot && !reactedUserIds.has(memberId)) {
+          log(`${member.user.username} removed ${reactionEmoji} reaction while the bot was offline`);
+          await handleReaction(reaction, member, false);
+        }
+      }
+    }
+  }
+}
+
 // Function that handles reactions and gives the corresponding roles
 async function handleReaction(reaction, user, isAdding) {
   // Checks if the reaction was send fully before trying to examine it
@@ -181,12 +266,8 @@ async function handleReaction(reaction, user, isAdding) {
   // Fetch the guild member using the users id provided by messageReaction
   const member = await reaction.message.guild.members.fetch(user.id);
 
-  log(`User ${member.id} ${isAdding ? 'added' : 'removed'} ${reactionUpdatedEmoji}`);
-
-  // Coutns the amout of roles
-  const rolesCount = config.roles?.length ?? 0;
   // For every role entry it checks if emoji is equal to just added emoji by the user if yes then adds the corresponding role to the same user
-  for (let i = 0; i < rolesCount; i++) {
+  for (let i = 0; i < getRolesCount(); i++) {
     // Declare the emoji and roleId as let variable type to let it change for every loop cycle
     let { emoji, roleId } = config.roles[i]; 
     if (reactionUpdatedEmoji === emoji) {
@@ -194,12 +275,12 @@ async function handleReaction(reaction, user, isAdding) {
         // Adds the role to the user if they are adding the reaction
         if (isAdding) {
           await member.roles.add(roleId);
-          log(`Added role: ${roleId} to: ${member.id}`);
+          log(`Added role ${reactionUpdatedEmoji} to: ${member.user.username}`);
         }
         // If not then just remove the reaction
         else {
           await member.roles.remove(roleId);
-          log(`Removed role: ${roleId} from: ${member.id}`);
+          log(`Removed role ${reactionUpdatedEmoji} from: ${member.user.username}`);
         }
       } catch (error) {
         console.error(`Failed to ${isAdding ? 'add' : 'remove'} role ${roleId} for ${member.id}`, error.message);
