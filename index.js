@@ -7,6 +7,10 @@ const {
   GatewayIntentBits,
   Partials,
   EmbedBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ActionRowBuilder,
+  MessageFlags,
 } = require('discord.js');
 
 // Loading the configuration file
@@ -62,9 +66,12 @@ function validateConfig() {
   const isMissing = (variable) => variable === '';
 
   // Verification section
-  const { channelId, roleId } = config.verification;
+  const { channelId, roleId, messageContent, buttonLabel, buttonStyle } = config.verification;
   if (isMissing(channelId)) pushMissing('verification.channelId');
   if (isMissing(roleId)) pushMissing('verification.roleId');
+  if (isMissing(messageContent)) pushMissing('verification.messageContent');
+  if (isMissing(buttonLabel)) pushMissing('verification.buttonLabel');
+  if (isMissing(buttonStyle)) pushMissing('verification.buttonStyle');
 
   // Reaction-role section
   {
@@ -120,21 +127,66 @@ const client = new Client({
 // Checks the config before bot startup
 validateConfig();
 
-// Temporary sleep function just for testing it will be removed later
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // Function that runs once client is ready
 client.once('clientReady', async () => {
   log(`Logged in as ${client.user.tag}`);
+  await verificationMessage();
   await reactionRoleMessage();
-  await sleep(5000);
   await ensureRoles();
 });
 
+// Sends the verification message if it hasn't been sent yet
+async function verificationMessage() {
+  log(`Verification message function starts`);
+  const { channelId, messageId } = config.verification;
+  log(`Loaded verification channelId from config file: ${channelId}`);
+  log(`Loaded verification messageId from config file: ${messageId}`);
+
+  // Saves channel object to a variable for later checking if message exist or not
+  const channel = await fetchChannel(channelId);
+
+  // Basically I copied everything that is in reactionRoleMessage because we need to do basically the same thing
+  if (messageId !== '') {
+    const message = await fetchMessage(channel, messageId);
+
+    if (message) {
+      log(`Verification message exists on channel: ${channelId}`);
+      return;
+    }
+    // If there is no message then it goes to create the message
+  }
+  log(`Verification message doesn't exist or couldn't be found, creating a new one...`);
+
+  // Loading necessary variables for verification message
+  const { messageContent, buttonLabel, buttonStyle } = config.verification;
+
+  // Creating the message button
+  const verifyButton = new ButtonBuilder()
+    .setCustomId('verify_button') // Unique identifier so later we can listen for interactions
+    .setLabel(buttonLabel)
+    .setStyle(buttonStyle);
+
+  // Sort of attaching the button to that message
+  const row = new ActionRowBuilder()
+    .addComponents(verifyButton);
+  
+  // Sending the message
+  const sendMessage = await channel.send({ content: messageContent, components: [row] });
+
+  // Saving newly sent messageId to memory and logging everything to console
+  const message = sendMessage.id;
+  log(`Verification message with messageId: ${message} sent to channelId: ${channelId}`);
+
+  // Saving the messageId to config.json and saving the config.json file
+  log(`Updating new Verification messageId to: ${message}`);
+  config.verification.messageId = message;
+  log(`Saving config.json file...`);
+  saveConfig();
+}
+
 // Sends the reaction-role message if it hasn't been sent yet
 async function reactionRoleMessage() {
+  log(`Reaction-role message function starts`);
   // Loading channelId and messageId from config file
   const { channelId, messageId } = config.reactionRole;
   log(`Loaded reaction-role channelId from config file: ${channelId}`);
@@ -163,8 +215,6 @@ async function reactionRoleMessage() {
     text += `**${emoji} - ${description}**\n`;
   }
 
-  log(`text in embed:\n${text}`); // Temporary log
-
   // Preparing a new message to be send
   const content = new EmbedBuilder()
     .setColor(config.reactionRole.embedColor)
@@ -183,7 +233,7 @@ async function reactionRoleMessage() {
   log(`Reaction-role message with messageId: ${message} sent to channelId: ${channelId}`);
 
   // Saving the messageId to config.json and saving the config.json file
-  log(`Updating new Reaction-role messageId to: ${message}`)
+  log(`Updating new Reaction-role messageId to: ${message}`);
   config.reactionRole.messageId = message;
   log(`Saving config.json file...`);
   saveConfig();
@@ -191,6 +241,7 @@ async function reactionRoleMessage() {
 
 // Function that ensures roles are synced for all users while the bot was inactive
 async function ensureRoles() {
+  log(`Checking if someone changed reaction while bot was offline`);
   const { channelId, messageId } = config.reactionRole;
 
   // Fetching the channel object
@@ -213,15 +264,12 @@ async function ensureRoles() {
     const users = reaction ? await reaction.users.fetch() : new Map();
 
     // Store userIds who currently have active reaction in a set for fast lookup
-    const reactedUserIds = new Set(
-      users.filter(user => !user.bot).map(user => user.id)
-    );
+    const reactedUserIds = new Set( users.filter(user => !user.bot).map(user => user.id) );
 
     // Add missing roles
     for (const userId of reactedUserIds) {
       try {
         const member = await channel.guild.members.fetch(userId);
-        
 
         if (!member.roles.cache.has(roleId)) {
           log(`${member.user.username} added ${reactionEmoji} reaction while the bot was offline`);
@@ -295,6 +343,56 @@ client.on('messageReactionAdd', (reaction, user) => {
 
 client.on('messageReactionRemove', (reaction, user) => {
   handleReaction(reaction, user, false).catch(console.error);
+});
+
+client.on('interactionCreate', async (interaction) => {
+  // Exit immediately if the reaction is not a button
+  if (!interaction.isButton()) return;
+
+  // Check if the clicked button is the correct button
+  if (interaction.customId === 'verify_button') {
+    // First we defer the reply this gives a bot more time to process and respond if any hiccup would occur
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    // Loading variables from configuration file
+    const { unverifiedRoleId, verifiedRoleId, verificationSuccess, verificationError } = config.verification;
+
+    // Then the try catch block to remove and add roles for that specific user
+    try {
+      // Getting the member object out of the verification to later see who clicked that button
+      const member = interaction.member;
+
+      await member.roles.remove(unverifiedRoleId);
+      await member.roles.add(verifiedRoleId);
+
+      // Now we use editReply because the interaction is already acknowledged
+      await interaction.editReply({ content: verificationSuccess });
+
+      log(`Successfully verified user: ${member.user.username}`);
+    } catch (err) {
+      log(`Error occured during verification process:`, err.message);
+
+      // Sending user a message about that error also with editReply
+      await interaction.editReply({ content: verificationError });
+    }
+  }
+});
+
+// Function that automatically assigns unverified role for everyone who joins the server
+client.on('guildMemberAdd', async (member) => {
+  try {
+    const { unverifiedRoleId } = config.verification;
+    const unverifiedRole = member.guild.roles.cache.get(unverifiedRoleId);
+
+    if (unverifiedRole) {
+      await member.roles.add(unverifiedRole);
+      log(`Unverified role was given to ${member.user.username}`);
+    } else {
+      log(`Unverified could not be found for user ${member.user.username}`);
+    }
+  } catch (err) {
+    log(`Error occured while trying to assing role to ${member.user.username}`, err.message);
+  }
 });
 
 // Logging in to Discord as a bot essentially starting it up
