@@ -66,10 +66,13 @@ function validateConfig() {
   const isMissing = (variable) => variable === '';
 
   // Verification section
-  const { channelId, roleId, messageContent, buttonLabel, buttonStyle } = config.verification;
+  const { channelId, unverifiedRoleId, verifiedRoleId, messageContent, verificationSuccess, verificationError, buttonLabel, buttonStyle } = config.verification;
   if (isMissing(channelId)) pushMissing('verification.channelId');
-  if (isMissing(roleId)) pushMissing('verification.roleId');
+  if (isMissing(unverifiedRoleId)) pushMissing('verification.unverifiedRoleId');
+  if (isMissing(verifiedRoleId)) pushMissing('verification.verifiedRoleId');
   if (isMissing(messageContent)) pushMissing('verification.messageContent');
+  if (isMissing(verificationSuccess)) pushMissing('verification.verificationSuccess');
+  if (isMissing(verificationError)) pushMissing('verification.verificationError');
   if (isMissing(buttonLabel)) pushMissing('verification.buttonLabel');
   if (isMissing(buttonStyle)) pushMissing('verification.buttonStyle');
 
